@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CZGNB-13 FALCÓN - Sistema de Actas Penales</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Font Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        gnb: {
+                            olive: '#2d3b2d',
+                            dark: '#1e281e',
+                            light: '#4a5d4a',
+                            gold: '#d4af37',
+                            goldhover: '#b59325',
+                            carrubio: '#800020',
+                            accent: '#3a4f3a',
+                            card: '#253325'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif']
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #121812;
+            color: #e2e8f0;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #1e281e;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #4a5d4a;
+            border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #d4af37;
+        }
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            #printArea, #printArea * {
+                visibility: visible;
+            }
+            #printArea {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                background: white !important;
+                color: black !important;
+                padding: 20px;
+            }
+            .no-print {
+                display: none !important;
+            }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col bg-gnb-dark text-slate-100">
+
+    <!-- Firebase App & Firestore Scripts -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, runTransaction, collection, query, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Configuration & Initialization
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'czgnb13-actas-default';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "demo-api-key",
+            authDomain: "demo-project.firebaseapp.com",
+            projectId: "demo-project",
+            storageBucket: "demo-project.appspot.com",
+            messagingSenderId: "123456789",
+            appId: "1:123456789:web:123456"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // App Global State
+        window.db = db;
+        window.auth = auth;
+        window.appId = appId;
+        window.actasData = [];
+        window.currentUser = null;
+
+        // Tactical Units List
+        window.UNIDADES_TACTICAS = [
+            'D-131-1CIA', 'D-131-2CIA', 'D-131-3CIA',
+            'D-132-1CIA', 'D-132-2CIA', 'D-132-3CIA', 'D-132-4CIA',
+            'D-133-1CIA', 'D-133-2CIA', 'D-133-3CIA',
+            'D-134-1CIA', 'D-134-2CIA', 'D-134-3CIA',
+            'DESUR-1CIA', 'DESUR-2CIA',
+            'DCR-13-1-1CIA', 'DCR-13-1-2CIA',
+            'DCR-13-2-1CIA', 'DCR-13-2-2CIA'
+        ];
+
+        // Authenticate User & Setup Realtime Listeners
+        async function initAuthAndData() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) {
+                console.warn("Auth initialization fallback:", err);
+                try {
+                    await signInAnonymously(auth);
+                } catch(e) {
+                    console.error("Anonymous auth failed:", e);
+                }
+            }
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    window.currentUser = user;
+                    document.getElementById('status-indicator').classList.remove('bg-red-500');
+                    document.getElementById('status-indicator').classList.add('bg-emerald-500');
+                    document.getElementById('status-text').innerText = 'En Línea - Nube Firebase Sincronizada';
+                    subscribeToActas();
+                } else {
+                    document.getElementById('status-indicator').classList.remove('bg-emerald-500');
+                    document.getElementById('status-indicator').classList.add('bg-red-500');
+                    document.getElementById('status-text').innerText = 'Sin Conexión';
+                }
+            });
+        }
+
+        // Subscribe to Actas collection in Realtime
+        function subscribeToActas() {
+            const publicActasCol = collection(db, 'artifacts', appId, 'public', 'data', 'actas_penales');
+            const q = query(publicActasCol);
+
+            onSnapshot(q, (snapshot) => {
+                const list = [];
+                snapshot.forEach((docSnap) => {
+                    list.push({ id: docSnap.id, ...docSnap.data() });
+                });
+
+                // Sort by correlativo descending
+                list.sort((a, b) => (b.correlativo || 0) - (a.correlativo || 0));
+                window.actasData = list;
+                
+                // Update UI Views
+                window.renderStats();
+                window.renderTable();
+            }, (error) => {
+                console.error("Error en tiempo real Firebase:", error);
+                window.showNotification("Error de sincronización con la nube: " + error.message, "error");
+            });
+        }
+
+        // Global function to Request / Save a New Acta with Atomic Transaction
+        window.solicitarNuevaActa = async function(formData) {
+            if (!window.currentUser) {
+                window.showNotification("Error: Sin conexión con Firebase.", "error");
+                return null;
+            }
+
+            const counterDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'counters', 'sip_sequence');
+            const actasColRef = collection(db, 'artifacts', appId, 'public', 'data', 'actas_penales');
+
+            try {
+                const result = await runTransaction(db, async (transaction) => {
+                    const counterDoc = await transaction.get(counterDocRef);
+                    let currentSeq = 0;
+
+                    if (counterDoc.exists()) {
+                        currentSeq = counterDoc.data().currentCorrelativo || 0;
+                    }
+
+                    const nextSeq = currentSeq + 1;
+                    const formattedSeq = String(nextSeq).padStart(4, '0');
+                    const numActa = `CZGNB13-DI-${formData.unidad}-SIP-${formattedSeq}-26`;
+
+                    const newActaData = {
+                        numActa: numActa,
+                        correlativo: nextSeq,
+                        unidad: formData.unidad,
+                        fecha: formData.fecha,
+                        funcionarios: formData.funcionarios,
+                        causa: formData.causa,
+                        auxiliar: formData.auxiliar,
+                        observaciones: formData.observaciones || 'Sin observaciones.',
+                        timestamp: new Date().toISOString(),
+                        estado: 'Registrado / Asignado',
+                        createdBy: window.currentUser.uid
+                    };
+
+                    const newActaDocRef = doc(actasColRef);
+                    transaction.set(counterDocRef, { currentCorrelativo: nextSeq, updatedAt: new Date().toISOString() });
+                    transaction.set(newActaDocRef, newActaData);
+
+                    return newActaData;
+                });
+
+                return result;
+            } catch (err) {
+                console.error("Transaction Error:", err);
+                throw err;
+            }
+        };
+
+        // Initialize App on DOM Load
+        window.addEventListener('DOMContentLoaded', () => {
+            initAuthAndData();
+            populateUnitSelects();
+        });
+
+        function populateUnitSelects() {
+            const selectSol = document.getElementById('sol-unidad');
+            const selectFilter = document.getElementById('filter-unidad');
+
+            window.UNIDADES_TACTICAS.forEach(u => {
+                if (selectSol) {
+                    const opt = document.createElement('option');
+                    opt.value = u;
+                    opt.textContent = u;
+                    selectSol.appendChild(opt);
+                }
+                if (selectFilter) {
+                    const opt = document.createElement('option');
+                    opt.value = u;
+                    opt.textContent = u;
+                    selectFilter.appendChild(opt);
+                }
+            });
+        }
+    </script>
+
+    <!-- HEADER / NAVIGATION -->
+    <header class="bg-gnb-olive border-b-2 border-gnb-gold shadow-lg sticky top-0 z-40 no-print">
+        <div class="max-w-7xl mx-mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-20">
+                <!-- LOGO & BRANDING -->
+                <div class="flex items-center space-x-3">
+                    <div class="w-12 h-12 rounded-full bg-gnb-gold/10 border-2 border-gnb-gold flex items-center justify-center text-gnb-gold shadow-inner">
+                        <i class="fa-solid font-bold fa-shield-halved text-2xl"></i>
+                    </div>
+                    <div>
+                        <div class="flex items-center space-x-2">
+                            <span class="bg-gnb-gold text-gnb-dark text-xs font-black px-2 py-0.5 rounded tracking-widest uppercase">GNB-13</span>
+                            <span class="text-xs text-slate-300 font-semibold tracking-wider">ESTADO FALCÓN</span>
+                        </div>
+                        <h1 class="text-lg sm:text-xl font-extrabold text-white tracking-tight leading-tight">
+                            DIVISIÓN DE INTELIGENCIA MILITAR
+                        </h1>
+                        <p class="text-xs text-slate-300">Sistema de Control y Solicitud de Actas Penales</p>
+                    </div>
+                </div>
+
+                <!-- REALTIME STATUS INDICATOR -->
+                <div class="hidden md:flex items-center space-x-2 bg-black/30 px-3 py-1.5 rounded-full border border-gnb-light/30">
+                    <span id="status-indicator" class="w-3 h-3 rounded-full bg-yellow-500 animate-pulse"></span>
+                    <span id="status-text" class="text-xs font-medium text-slate-300">Conectando a Firebase...</span>
+                </div>
+
+                <!-- TABS NAVIGATION -->
+                <div class="flex items-center space-x-2">
+                    <button id="tab-btn-solicitud" onclick="switchTab('solicitud')" class="flex items-center space-x-2 px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-gnb-gold text-gnb-dark shadow-md hover:bg-gnb-goldhover">
+                        <i class="fa-solid fa-file-signature"></i>
+                        <span>Solicitar Acta</span>
+                    </button>
+                    <button id="tab-btn-central" onclick="switchTab('central')" class="flex items-center space-x-2 px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-gnb-card hover:bg-gnb-accent text-slate-200 border border-gnb-light/30">
+                        <i class="fa-solid fa-list-check"></i>
+                        <span>Panel Central</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- MAIN CONTENT CONTAINER -->
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 no-print">
+
+        <!-- METRICS / STATS OVERVIEW -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div class="bg-gnb-card border border-gnb-light/30 rounded-xl p-4 flex items-center justify-between shadow-md">
+                <div>
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Actas Emitidas</p>
+                    <p id="stat-total" class="text-2xl font-black text-slate-100 mt-1">0</p>
+                </div>
+                <div class="w-12 h-12 rounded-lg bg-emerald-950/60 border border-emerald-600/30 flex items-center justify-center text-emerald-400">
+                    <i class="fa-solid fa-folder-closed text-xl"></i>
+                </div>
+            </div>
+
+            <div class="bg-gnb-card border border-gnb-light/30 rounded-xl p-4 flex items-center justify-between shadow-md">
+                <div>
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Última Acta Asignada</p>
+                    <p id="stat-last-num" class="text-sm font-extrabold text-gnb-gold mt-1">N/A</p>
+                </div>
+                <div class="w-12 h-12 rounded-lg bg-amber-950/60 border border-gnb-gold/30 flex items-center justify-center text-gnb-gold">
+                    <i class="fa-solid fa-hashtag text-xl"></i>
+                </div>
+            </div>
+
+            <div class="bg-gnb-card border border-gnb-light/30 rounded-xl p-4 flex items-center justify-between shadow-md">
+                <div>
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Unidades Activas</p>
+                    <p id="stat-units-count" class="text-2xl font-black text-slate-100 mt-1">0</p>
+                </div>
+                <div class="w-12 h-12 rounded-lg bg-blue-950/60 border border-blue-600/30 flex items-center justify-center text-blue-400">
+                    <i class="fa-solid fa-sitemap text-xl"></i>
+                </div>
+            </div>
+
+            <div class="bg-gnb-card border border-gnb-light/30 rounded-xl p-4 flex items-center justify-between shadow-md">
+                <div>
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Secuencia Global SIP</p>
+                    <p id="stat-correlativo" class="text-2xl font-black text-emerald-400 mt-1">SIP-0000</p>
+                </div>
+                <div class="w-12 h-12 rounded-lg bg-gnb-carrubio/30 border border-red-600/30 flex items-center justify-center text-red-400">
+                    <i class="fa-solid fa-cloud-arrow-up text-xl"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 1: FORMULARIO DE SOLICITUD DE ACTA (POR CUALQUIER UNIDAD TÁCTICA) -->
+        <section id="tab-solicitud" class="block space-y-6">
+            <div class="bg-gnb-card border border-gnb-light/40 rounded-2xl shadow-2xl p-6 md:p-8">
+                <div class="border-b border-gnb-light/30 pb-4 mb-6 flex items-center justify-between flex-wrap gap-4">
+                    <div>
+                        <h2 class="text-xl font-black text-white flex items-center space-x-2">
+                            <i class="fa-solid fa-file-pen text-gnb-gold"></i>
+                            <span>SOLICITUD Y REGISTRO EN TIEMPO REAL</span>
+                        </h2>
+                        <p class="text-xs text-slate-300 mt-1">Complete los datos tácticos. Al enviar, la nube asignará de manera única y secuencial el número de acta oficial CZGNB-13.</p>
+                    </div>
+                    <span class="bg-gnb-olive text-gnb-gold text-xs font-bold px-3 py-1.5 rounded-full border border-gnb-gold/30">
+                        <i class="fa-solid fa-network-wired mr-1"></i> Secuencia Global Activa
+                    </span>
+                </div>
+
+                <form id="form-solicitud" onsubmit="handleFormSubmit(event)" class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- UNIDAD TÁCTICA -->
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
+                                Unidad Táctica Solicitante <span class="text-red-400">*</span>
+                            </label>
+                            <select id="sol-unidad" required class="w-full bg-gnb-dark border border-gnb-light/50 rounded-xl px-4 py-3 text-slate-100 focus:outline-none focus:border-gnb-gold focus:ring-1 focus:ring-gnb-gold transition-all text-sm font-semibold">
+                                <option value="" disabled selected>-- Seleccione la Unidad Táctica --</option>
+                            </select>
+                        </div>
+
+                        <!-- FECHA DEL HECHO / REGISTRO -->
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
+                                Fecha y Hora del Procedimiento <span class="text-red-400">*</span>
+                            </label>
+                            <input type="datetime-local" id="sol-fecha" required class="w-full bg-gnb-dark border border-gnb-light/50 rounded-xl px-4 py-3 text-slate-100 focus:outline-none focus:border-gnb-gold focus:ring-1 focus:ring-gnb-gold transition-all text-sm font-medium">
+                        </div>
+                    </div>
+
+                    <!-- FUNCIONARIOS ACTUANTES -->
+                    <div>
+                        <label class="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
+                            Funcionarios Actuantes (Rango, Nombre, C.I.) <span class="text-red-400">*</span>
+                        </label>
+                        <textarea id="sol-funcionarios" required rows="3" placeholder="Ej: S/1. Perez Juan C.I. 20.123.456, S/2. Gomez Jose C.I. 22.987.654..." class="w-full bg-gnb-dark border border-gnb-light/50 rounded-xl p-4 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-gnb-gold focus:ring-1 focus:ring-gnb-gold transition-all text-sm"></textarea>
+                    </div>
+
+                    <!-- CAUSA O PRESUNCIÓN DELITO -->
+                    <div>
+                        <label class="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
+                            Causa, Delito o Presunción de Delito <span class="text-red-400">*</span>
+                        </label>
+                        <textarea id="sol-causa" required rows="3" placeholder="Ej: Presunta comisión de uno de los delitos tipificados en la Ley Orgánica contra Delincuencia Organizada (Contrabando de Material Estratégico)..." class="w-full bg-gnb-dark border border-gnb-light/50 rounded-xl p-4 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-gnb-gold focus:ring-1 focus:ring-gnb-gold transition-all text-sm"></textarea>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- AUXILIAR DE INTELIGENCIA -->
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
+                                Auxiliar de la Div. de Inteligencia <span class="text-red-400">*</span>
+                            </label>
+                            <input type="text" id="sol-auxiliar" required placeholder="Grado y Nombre del Auxiliar Receptor" class="w-full bg-gnb-dark border border-gnb-light/50 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-gnb-gold focus:ring-1 focus:ring-gnb-gold transition-all text-sm font-medium">
+                        </div>
+
+                        <!-- OBSERVACIONES -->
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
+                                Observaciones / Detalle Adicional
+                            </label>
+                            <input type="text" id="sol-observaciones" placeholder="Lugar exacto, retenciones o especificaciones..." class="w-full bg-gnb-dark border border-gnb-light/50 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-gnb-gold focus:ring-1 focus:ring-gnb-gold transition-all text-sm font-medium">
+                        </div>
+                    </div>
+
+                    <!-- SUBMIT BUTTON -->
+                    <div class="pt-4 flex justify-end">
+                        <button type="submit" id="btn-submit" class="w-full sm:w-auto px-8 py-4 bg-gradient-to-r from-gnb-gold to-yellow-600 hover:from-yellow-500 hover:to-gnb-gold text-gnb-dark font-black text-base rounded-xl shadow-xl hover:shadow-2xl transition-all transform hover:-translate-y-0.5 flex items-center justify-center space-x-3">
+                            <i class="fa-solid fa-paper-plane text-lg"></i>
+                            <span>SOLICITAR NÚMERO DE ACTA EN TIEMPO REAL</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <!-- TAB 2: PANEL CENTRAL / CENTRALIZADOR DE INTELIGENCIA -->
+        <section id="tab-central" class="hidden space-y-6">
+            <!-- FILTERS AND SEARCH -->
+            <div class="bg-gnb-card border border-gnb-light/40 rounded-2xl p-6 shadow-xl space-y-4">
+                <div class="flex items-center justify-between flex-wrap gap-4">
+                    <h3 class="text-lg font-bold text-white flex items-center space-x-2">
+                        <i class="fa-solid fa-filter text-gnb-gold"></i>
+                        <span>Filtros y Búsqueda Centralizada</span>
+                    </h3>
+                    
+                    <button onclick="exportToCSV()" class="px-4 py-2 bg-emerald-800 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center space-x-2 transition-all shadow">
+                        <i class="fa-solid fa-file-excel text-sm"></i>
+                        <span>Exportar Respaldo (CSV/Excel)</span>
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <!-- BUSCADOR -->
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 mb-1">Buscar por Palabra Clave</label>
+                        <div class="relative">
+                            <i class="fa-solid fa-search absolute left-3 top-3 text-slate-500 text-xs"></i>
+                            <input type="text" id="filter-search" oninput="renderTable()" placeholder="N° Acta, Funcionario, Causa..." class="w-full bg-gnb-dark border border-gnb-light/50 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-gnb-gold">
+                        </div>
+                    </div>
+
+                    <!-- UNIDAD -->
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 mb-1">Unidad Táctica</label>
+                        <select id="filter-unidad" onchange="renderTable()" class="w-full bg-gnb-dark border border-gnb-light/50 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-gnb-gold">
+                            <option value="">-- Todas las Unidades --</option>
+                        </select>
+                    </div>
+
+                    <!-- FECHA DESDE -->
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 mb-1">Fecha Desde</label>
+                        <input type="date" id="filter-fecha-desde" onchange="renderTable()" class="w-full bg-gnb-dark border border-gnb-light/50 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-gnb-gold">
+                    </div>
+
+                    <!-- FECHA HASTA -->
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-400 mb-1">Fecha Hasta</label>
+                        <input type="date" id="filter-fecha-hasta" onchange="renderTable()" class="w-full bg-gnb-dark border border-gnb-light/50 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-gnb-gold">
+                    </div>
+                </div>
+            </div>
+
+            <!-- TABLA CENTRALIZADA -->
+            <div class="bg-gnb-card border border-gnb-light/40 rounded-2xl shadow-xl overflow-hidden">
+                <div class="overflow-x-auto custom-scrollbar">
+                    <table class="w-full text-left text-xs border-collapse">
+                        <thead>
+                            <tr class="bg-gnb-olive text-gnb-gold uppercase tracking-wider font-extrabold border-b border-gnb-light/40">
+                                <th class="p-4">N° de Acta Oficial</th>
+                                <th class="p-4">Unidad Solicitante</th>
+                                <th class="p-4">Fecha/Hora</th>
+                                <th class="p-4">Funcionarios</th>
+                                <th class="p-4">Causa / Presunción</th>
+                                <th class="p-4">Auxiliar Inteligencia</th>
+                                <th class="p-4 text-center">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="table-body" class="divide-y divide-gnb-light/20 text-slate-200">
+                            <tr>
+                                <td colspan="7" class="p-8 text-center text-slate-400">Cargando registros centralizados desde la nube...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- FOOTER INSTITUCIONAL -->
+    <footer class="bg-gnb-dark border-t border-gnb-light/30 py-4 text-center text-xs text-slate-500 no-print">
+        <p>COMANDO DE ZONA N° 13 FALCÓN - DIVISIÓN DE INTELIGENCIA MILITAR</p>
+        <p class="text-[10px] text-slate-600 mt-0.5">Sincronización de Registro Único de Actas en Tiempo Real v2.6</p>
+    </footer>
+
+    <!-- MODAL DE CONFIRMACIÓN DE ACTA GENERADA -->
+    <div id="modal-confirm" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden no-print">
+        <div class="bg-gnb-card border-2 border-gnb-gold rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-6 text-center transform transition-all">
+            <div class="w-16 h-16 rounded-full bg-gnb-gold/20 border-2 border-gnb-gold flex items-center justify-center text-gnb-gold mx-auto animate-bounce">
+                <i class="fa-solid fa-circle-check text-3xl"></i>
+            </div>
+
+            <div>
+                <span class="text-xs font-bold text-emerald-400 uppercase tracking-widest">¡Acta Asignada Exitosamente!</span>
+                <h3 class="text-xl font-extrabold text-white mt-1">NÚMERO DE ACTA OFICIAL:</h3>
+                <div class="mt-3 p-4 bg-black/50 rounded-xl border border-gnb-gold/50">
+                    <p id="modal-num-acta" class="text-lg sm:text-xl font-black text-gnb-gold tracking-wider select-all">
+                        CZGNB13-DI-...
+                    </p>
+                </div>
+            </div>
+
+            <p class="text-xs text-slate-300">
+                El número de acta fue registrado de manera única en la secuencia del Comando de Zona N° 13. Puede imprimir la constancia oficial inmediatamente.
+            </p>
+
+            <div class="flex items-center justify-center space-x-3 pt-2">
+                <button onclick="closeModalAndPrintCurrent()" class="px-5 py-2.5 bg-gnb-gold text-gnb-dark font-bold rounded-lg text-xs hover:bg-gnb-goldhover transition-all flex items-center space-x-2">
+                    <i class="fa-solid fa-print"></i>
+                    <span>Imprimir Constancia</span>
+                </button>
+                <button onclick="closeModal()" class="px-5 py-2.5 bg-gnb-light/50 hover:bg-gnb-light text-white font-bold rounded-lg text-xs transition-all">
+                    <span>Cerrar</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- AREA DE IMPRESIÓN EXCLUSIVA / CONSTANCIA OFICIAL (OCULTA EN PANTALLA) -->
+    <div id="printArea" class="hidden">
+        <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; color: #000; padding: 20px;">
+            <!-- ENCABEZADO OFICIAL -->
+            <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 20px;">
+                <p style="font-size: 11px; font-weight: bold; margin: 0; uppercase">REPÚBLICA BOLIVARIANA DE VENEZUELA</p>
+                <p style="font-size: 11px; font-weight: bold; margin: 0; uppercase">MINISTERIO DEL PODER POPULAR PARA LA DEFENSA</p>
+                <p style="font-size: 11px; font-weight: bold; margin: 0; uppercase">FUERZA ARMADA NACIONAL BOLIVARIANA</p>
+                <p style="font-size: 11px; font-weight: bold; margin: 0; uppercase">GUARDIA NACIONAL BOLIVARIANA</p>
+                <p style="font-size: 11px; font-weight: bold; margin: 0; uppercase">COMANDO DE ZONA N° 13 - ESTADO FALCÓN</p>
+                <p style="font-size: 11px; font-weight: bold; margin: 0; uppercase; color: #800020;">DIVISIÓN DE INTELIGENCIA MILITAR</p>
+            </div>
+
+            <!-- TITULO Y NUMERO DE ACTA -->
+            <div style="text-align: center; margin-bottom: 25px;">
+                <h2 style="font-size: 16px; font-weight: bold; text-decoration: underline; margin-bottom: 8px;">CONSTANCIA OFICIAL DE ASIGNACIÓN DE NÚMERO DE ACTA PENAL</h2>
+                <div style="display: inline-block; border: 2px solid #000; padding: 8px 16px; background-color: #f8f9fa; font-size: 16px; font-weight: bold; margin-top: 5px;">
+                    <span id="print-num-acta">CZGNB13-DI-UNIDAD-SIP-0000-26</span>
+                </div>
+            </div>
+
+            <!-- DATOS DEL REGISTRO -->
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 30px; font-size: 12px;">
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #000; font-weight: bold; width: 30%; background-color: #f0f0f0;">UNIDAD SOLICITANTE:</td>
+                    <td id="print-unidad" style="padding: 8px; border: 1px solid #000;">-</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #f0f0f0;">FECHA Y HORA DEL HECHO:</td>
+                    <td id="print-fecha" style="padding: 8px; border: 1px solid #000;">-</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #f0f0f0;">FUNCIONARIOS ACTUANTES:</td>
+                    <td id="print-funcionarios" style="padding: 8px; border: 1px solid #000; white-space: pre-wrap;">-</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #f0f0f0;">CAUSA / PRESUNCIÓN:</td>
+                    <td id="print-causa" style="padding: 8px; border: 1px solid #000; white-space: pre-wrap;">-</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #f0f0f0;">AUXILIAR INTELIGENCIA:</td>
+                    <td id="print-auxiliar" style="padding: 8px; border: 1px solid #000;">-</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #f0f0f0;">OBSERVACIONES:</td>
+                    <td id="print-observaciones" style="padding: 8px; border: 1px solid #000;">-</td>
+                </tr>
+            </table>
+
+            <p style="font-size: 11px; text-align: justify; margin-bottom: 60px;">
+                Se certifica que el número correlativo de acta penal antes mencionado ha sido registrado de manera autógrafa y correlativa en el Sistema Centralizado de Inteligencia del Comando de Zona N° 13 Falcón, garantizando la cadena de secuencia legal institucional.
+            </p>
+
+            <!-- FIRMAS DIGITALES / INSTITUCIONALES -->
+            <div style="display: flex; justify-content: space-between; margin-top: 80px; text-align: center;">
+                <div style="width: 45%;">
+                    <div style="border-top: 1px solid #000; padding-top: 5px;">
+                        <p id="print-firma-auxiliar" style="font-size: 11px; font-weight: bold; margin: 0;">AUXILIAR RECEPTOR</p>
+                        <p style="font-size: 10px; margin: 0;">División de Inteligencia CZGNB-13</p>
+                    </div>
+                </div>
+
+                <div style="width: 45%;">
+                    <div style="border-top: 1px solid #000; padding-top: 5px;">
+                        <p style="font-size: 11px; font-weight: bold; margin: 0;">JEFE DE LA DIVISIÓN DE INTELIGENCIA MILITAR</p>
+                        <p style="font-size: 10px; margin: 0;">Comando de Zona N° 13 Falcón</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST / NOTIFICATION SYSTEM -->
+    <div id="toast" class="fixed bottom-5 right-5 z-50 transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none">
+        <div id="toast-content" class="bg-gnb-card border border-gnb-gold px-5 py-3 rounded-xl shadow-2xl flex items-center space-x-3 text-xs font-bold text-slate-100">
+            <i id="toast-icon" class="fa-solid fa-info-circle text-gnb-gold text-base"></i>
+            <span id="toast-message">Mensaje de notificación</span>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT LOGIC FOR UI INTERACTION -->
+    <script>
+        let currentModalActa = null;
+
+        // Switch Tabs
+        function switchTab(tab) {
+            const btnSol = document.getElementById('tab-btn-solicitud');
+            const btnCent = document.getElementById('tab-btn-central');
+            const secSol = document.getElementById('tab-solicitud');
+            const secCent = document.getElementById('tab-central');
+
+            if (tab === 'solicitud') {
+                secSol.classList.remove('hidden');
+                secCent.classList.add('hidden');
+                btnSol.className = "flex items-center space-x-2 px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-gnb-gold text-gnb-dark shadow-md hover:bg-gnb-goldhover";
+                btnCent.className = "flex items-center space-x-2 px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-gnb-card hover:bg-gnb-accent text-slate-200 border border-gnb-light/30";
+            } else {
+                secSol.classList.add('hidden');
+                secCent.classList.remove('hidden');
+                btnCent.className = "flex items-center space-x-2 px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-gnb-gold text-gnb-dark shadow-md hover:bg-gnb-goldhover";
+                btnSol.className = "flex items-center space-x-2 px-4 py-2.5 rounded-lg text-sm font-bold transition-all bg-gnb-card hover:bg-gnb-accent text-slate-200 border border-gnb-light/30";
+            }
+        }
+
+        // Handle Form Submit
+        async function handleFormSubmit(e) {
+            e.preventDefault();
+            const btn = document.getElementById('btn-submit');
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i> <span>ASIGNANDO NÚMERO Y GUARDANDO EN FIREBASE...</span>`;
+
+            const formData = {
+                unidad: document.getElementById('sol-unidad').value,
+                fecha: document.getElementById('sol-fecha').value,
+                funcionarios: document.getElementById('sol-funcionarios').value,
+                causa: document.getElementById('sol-causa').value,
+                auxiliar: document.getElementById('sol-auxiliar').value,
+                observaciones: document.getElementById('sol-observaciones').value
+            };
+
+            try {
+                const newActa = await window.solicitarNuevaActa(formData);
+                if (newActa) {
+                    currentModalActa = newActa;
+                    document.getElementById('modal-num-acta').innerText = newActa.numActa;
+                    document.getElementById('modal-confirm').classList.remove('hidden');
+                    document.getElementById('form-solicitud').reset();
+                    showNotification("Acta registrada exitosamente en tiempo real.", "success");
+                }
+            } catch (err) {
+                console.error("Error al registrar acta:", err);
+                showNotification("Error asignando correlativo. Verifique la conexión.", "error");
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fa-solid fa-paper-plane text-lg"></i> <span>SOLICITAR NÚMERO DE ACTA EN TIEMPO REAL</span>`;
+            }
+        }
+
+        // Render Dashboard Metrics
+        window.renderStats = function() {
+            const list = window.actasData || [];
+            document.getElementById('stat-total').innerText = list.length;
+
+            if (list.length > 0) {
+                document.getElementById('stat-last-num').innerText = list[0].numActa || 'N/A';
+                document.getElementById('stat-correlativo').innerText = `SIP-${String(list[0].correlativo || 0).padStart(4, '0')}`;
+            } else {
+                document.getElementById('stat-last-num').innerText = 'Sin registros';
+                document.getElementById('stat-correlativo').innerText = 'SIP-0000';
+            }
+
+            // Count unique units
+            const unitsSet = new Set(list.map(a => a.unidad));
+            document.getElementById('stat-units-count').innerText = unitsSet.size;
+        };
+
+        // Render Table Data with Filters
+        window.renderTable = function() {
+            const tbody = document.getElementById('table-body');
+            const search = (document.getElementById('filter-search')?.value || '').toLowerCase();
+            const filterUnidad = document.getElementById('filter-unidad')?.value || '';
+            const fechaDesde = document.getElementById('filter-fecha-desde')?.value || '';
+            const fechaHasta = document.getElementById('filter-fecha-hasta')?.value || '';
+
+            let list = window.actasData || [];
+
+            // Apply Search Filter
+            if (search) {
+                list = list.filter(item => 
+                    (item.numActa && item.numActa.toLowerCase().includes(search)) ||
+                    (item.unidad && item.unidad.toLowerCase().includes(search)) ||
+                    (item.funcionarios && item.funcionarios.toLowerCase().includes(search)) ||
+                    (item.causa && item.causa.toLowerCase().includes(search)) ||
+                    (item.auxiliar && item.auxiliar.toLowerCase().includes(search))
+                );
+            }
+
+            // Apply Unit Filter
+            if (filterUnidad) {
+                list = list.filter(item => item.unidad === filterUnidad);
+            }
+
+            // Apply Date Filters
+            if (fechaDesde) {
+                list = list.filter(item => item.fecha >= fechaDesde);
+            }
+            if (fechaHasta) {
+                list = list.filter(item => item.fecha <= fechaHasta + 'T23:59:59');
+            }
+
+            if (list.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="7" class="p-8 text-center text-slate-400">
+                            <i class="fa-solid fa-folder-open text-2xl mb-2 text-slate-500 block"></i>
+                            No se encontraron registros de actas penales.
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = list.map(item => `
+                <tr class="hover:bg-gnb-accent/40 transition-colors border-b border-gnb-light/20">
+                    <td class="p-4 font-extrabold text-gnb-gold whitespace-nowrap">${item.numActa || 'N/A'}</td>
+                    <td class="p-4 font-bold text-slate-200">${item.unidad || '-'}</td>
+                    <td class="p-4 text-slate-300 whitespace-nowrap">${item.fecha ? new Date(item.fecha).toLocaleString('es-VE') : '-'}</td>
+                    <td class="p-4 max-w-xs truncate text-slate-300" title="${escapeHtml(item.funcionarios)}">${escapeHtml(item.funcionarios)}</td>
+                    <td class="p-4 max-w-xs truncate text-slate-300" title="${escapeHtml(item.causa)}">${escapeHtml(item.causa)}</td>
+                    <td class="p-4 text-slate-300">${escapeHtml(item.auxiliar || '-')}</td>
+                    <td class="p-4 text-center">
+                        <button onclick="printActaById('${item.id}')" class="px-3 py-1.5 bg-gnb-gold/20 hover:bg-gnb-gold text-gnb-gold hover:text-gnb-dark border border-gnb-gold/50 rounded-lg font-bold text-xs transition-all flex items-center justify-center space-x-1 mx-auto">
+                            <i class="fa-solid fa-print"></i>
+                            <span>Imprimir</span>
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        };
+
+        // Escape HTML
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, "&amp;")
+                      .replace(/</g, "&lt;")
+                      .replace(/>/g, "&gt;")
+                      .replace(/"/g, "&quot;")
+                      .replace(/'/g, "&#039;");
+        }
+
+        // Close Modal
+        function closeModal() {
+            document.getElementById('modal-confirm').classList.add('hidden');
+        }
+
+        // Close Modal and Print
+        function closeModalAndPrintCurrent() {
+            closeModal();
+            if (currentModalActa) {
+                fillAndPrint(currentModalActa);
+            }
+        }
+
+        // Print Acta by ID from Table
+        function printActaById(id) {
+            const acta = (window.actasData || []).find(a => a.id === id);
+            if (acta) {
+                fillAndPrint(acta);
+            } else {
+                showNotification("No se encontró la información del acta.", "error");
+            }
+        }
+
+        // Populate Print Template and Launch Browser Print Dialog
+        function fillAndPrint(acta) {
+            document.getElementById('print-num-acta').innerText = acta.numActa || 'N/A';
+            document.getElementById('print-unidad').innerText = acta.unidad || 'N/A';
+            document.getElementById('print-fecha').innerText = acta.fecha ? new Date(acta.fecha).toLocaleString('es-VE') : 'N/A';
+            document.getElementById('print-funcionarios').innerText = acta.funcionarios || 'N/A';
+            document.getElementById('print-causa').innerText = acta.causa || 'N/A';
+            document.getElementById('print-auxiliar').innerText = acta.auxiliar || 'N/A';
+            document.getElementById('print-observaciones').innerText = acta.observaciones || 'Ninguna.';
+            document.getElementById('print-firma-auxiliar').innerText = (acta.auxiliar || 'AUXILIAR RECEPTOR').toUpperCase();
+
+            const printArea = document.getElementById('printArea');
+            printArea.classList.remove('hidden');
+            window.print();
+            printArea.classList.add('hidden');
+        }
+
+        // Export All Actas to CSV
+        function exportToCSV() {
+            const list = window.actasData || [];
+            if (list.length === 0) {
+                showNotification("No hay datos para exportar.", "error");
+                return;
+            }
+
+            const headers = ["Numero de Acta", "Unidad Tactica", "Fecha Procedimiento", "Funcionarios Actuantes", "Causa / Delito", "Auxiliar Inteligencia", "Observaciones"];
+            const rows = list.map(a => [
+                `"${a.numActa || ''}"`,
+                `"${a.unidad || ''}"`,
+                `"${a.fecha || ''}"`,
+                `"${(a.funcionarios || '').replace(/"/g, '""')}"`,
+                `"${(a.causa || '').replace(/"/g, '""')}"`,
+                `"${a.auxiliar || ''}"`,
+                `"${(a.observaciones || '').replace(/"/g, '""')}"`
+            ]);
+
+            const csvContent = "\uFEFF" + [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.setAttribute("href", url);
+            link.setAttribute("download", `Actas_Penales_CZGNB13_${new Date().toISOString().slice(0,10)}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            showNotification("Respaldo exportado exitosamente en CSV.", "success");
+        }
+
+        // Show Custom Toast Notification
+        function showNotification(msg, type = "info") {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toast-message');
+            const toastIcon = document.getElementById('toast-icon');
+
+            toastMessage.innerText = msg;
+            if (type === "success") {
+                toastIcon.className = "fa-solid fa-circle-check text-emerald-400 text-base";
+            } else if (type === "error") {
+                toastIcon.className = "fa-solid fa-circle-exclamation text-red-400 text-base";
+            } else {
+                toastIcon.className = "fa-solid fa-info-circle text-gnb-gold text-base";
+            }
+
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            toast.classList.add('translate-y-0', 'opacity-100');
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-0', 'opacity-100');
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 4000);
+        }
+
+        window.showNotification = showNotification;
+    </script>
+</body>
+</html>
